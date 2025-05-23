@@ -61,42 +61,92 @@
   <script>
     let drops = [], chargedMap = [];
     let capacity, speed, startPercent, targetPercent;
-    let paused=false, running=false, charging=false;
-    let totalChargingSeconds=0, chargingStartTime=0;
-    let dropsPerSecond=100, lastFrameTime=performance.now();
+    let paused = false, running = false, charging = false;
+    let totalChargingSeconds = 0, chargingStartTime = 0, pauseStartTime = 0;
+    let dropsPerSecond = 100, lastFrameTime = performance.now();
 
     const capIn = document.getElementById('capacity');
     const spdIn = document.getElementById('speed');
     const stIn  = document.getElementById('startPercent');
     const tgIn  = document.getElementById('targetPercent');
     const startBtn = document.getElementById('startBtn');
-    const status   = document.getElementById('status');
-    const timeLeft = document.getElementById('timeLeft');
+    const pauseBtnRef = document.getElementById('pauseBtn'); // Renamed to avoid conflict
+    const statusText = document.getElementById('status'); // Renamed to avoid conflict
+    const timeLeftText = document.getElementById('timeLeft'); // Renamed to avoid conflict
     const canvas   = document.getElementById('batteryCanvas');
     const ctx      = canvas.getContext('2d');
 
     function toggleCharging() {
       charging = !charging;
-      if (charging) { startCharging(); startBtn.innerText='Stop Charging'; }
-      else          { stopCharging();  startBtn.innerText='Start Charging'; }
+      if (charging) {
+        startCharging();
+        startBtn.innerText = 'Stop Charging';
+      } else {
+        stopCharging();
+        startBtn.innerText = 'Start Charging';
+      }
     }
 
     function startCharging() {
       drops = [];
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      chargedMap = Array(500).fill().map(()=>Array(1000).fill(false));
-      updateSettings();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      chargedMap = Array(500).fill().map(() => Array(1000).fill(false));
+      updateSettings(); // This populates startPercent and targetPercent
+
+      // Validation: Start % must not be greater than Target %
+      if (startPercent > targetPercent) {
+        alert("Start % cannot be greater than Target %.");
+        charging = false; // Reset charging state
+        startBtn.innerText = 'Start Charging'; // Reset button text
+        // Re-enable inputs since we are not proceeding
+        capIn.disabled = false;
+        spdIn.disabled = false;
+        stIn.disabled = false;
+        tgIn.disabled = false;
+        return; 
+      }
+
       fillInitialCharge();
-      paused=false; running=true;
-      chargingStartTime=Date.now();
-      lastFrameTime=performance.now();
+      
+      paused = false; 
+      pauseStartTime = 0; 
+      pauseBtnRef.innerText = 'Pause';
+
+      capIn.disabled = true;
+      spdIn.disabled = true;
+      stIn.disabled = true;
+      tgIn.disabled = true;
+
+      running = true;
+      chargingStartTime = performance.now(); 
+      lastFrameTime = performance.now();
       requestAnimationFrame(updateCharging);
     }
 
     function stopCharging() {
-      paused=true; running=false; drops=[];
-      status.innerText='Stopped';
-      timeLeft.innerText='Time Left: --:--:--';
+      if (running) { // If it was running, set paused state.
+        paused = true;
+        // pauseStartTime is not set here, as this is a full stop.
+      }
+      running = false;
+      drops = []; 
+      statusText.innerText = 'Stopped';
+      timeLeftText.innerText = 'Time Left: --:--:--';
+      // Consider if pauseBtnRef.innerText should change, e.g., to 'Pause' if cannot resume from stop.
+      // For now, if togglePause allows resuming a "stopped" charge, 'Resume' might be okay.
+      // However, current togglePause logic is tied to 'running' state for time adjustments.
+      // So, if stopCharging sets paused=true, then togglePause *could* unpause it,
+      // but time adjustments might be off if pauseStartTime wasn't set.
+      // Safest is to ensure togglePause only has full effect if 'running' was true when paused.
+      // If stop means truly stop, then perhaps paused should be false, and pause button 'Pause'.
+      // Let's set paused to false on stop, as it's not a temporary pause.
+      paused = false; 
+      pauseBtnRef.innerText = 'Pause'; // Can't resume a "stopped" state with pause button.
+      
+      capIn.disabled = false;
+      spdIn.disabled = false;
+      stIn.disabled = false;
+      tgIn.disabled = false;
     }
 
     function updateSettings() {
@@ -104,115 +154,222 @@
       speed         = +spdIn.value;
       startPercent  = +stIn.value;
       targetPercent = +tgIn.value;
-      const pctDiff = (targetPercent - startPercent)/100;
+      const pctDiff = (targetPercent - startPercent) / 100;
       const energy  = pctDiff * capacity;
-      totalChargingSeconds = (energy/speed)*3600;
+      totalChargingSeconds = (energy / speed) * 3600;
       dropsPerSecond = Math.max(20, speed * 10);
     }
 
     function fillInitialCharge() {
-      const totalPix = 1000*500;
-      const startPix = Math.floor(totalPix*startPercent/100);
-      let f=0;
-      for(let y=0; y<500; y++){
-        for(let x=0; x<1000; x++){
-          if(f<startPix){ chargedMap[y][x]=true; f++; }
+      const totalPix = 1000 * 500;
+      const startPix = Math.floor(totalPix * startPercent / 100);
+      let f = 0;
+      for (let y = 0; y < 500; y++) {
+        for (let x = 0; x < 1000; x++) {
+          if (f < startPix) { chargedMap[y][x] = true; f++; }
           else return;
         }
       }
     }
 
     function updateCharging(now) {
-      if(!running) return;
+      if (!running) return;
 
-      // update UI
-      const elapsed = (Date.now()-chargingStartTime)/1000;
-      const prog    = Math.min(elapsed/totalChargingSeconds,1);
-      const curPct  = startPercent + (targetPercent-startPercent)*prog;
-      const secLeft = Math.max(totalChargingSeconds-elapsed,0);
+      if (paused) {
+        requestAnimationFrame(updateCharging); 
+        return; 
+      }
 
-      status.innerText = prog>=1
+      if (typeof now === 'undefined') { // Fallback if 'now' is not passed by rAF
+        now = performance.now();
+      }
+      
+      const elapsed = (now - chargingStartTime) / 1000; 
+      const prog    = Math.min(elapsed / totalChargingSeconds, 1);
+      const curPct  = startPercent + (targetPercent - startPercent) * prog;
+      const secLeft = Math.max(totalChargingSeconds - elapsed, 0);
+
+      statusText.innerText = prog >= 1
         ? 'Target Reached!'
         : `Charging: ${curPct.toFixed(2)}%`;
-      timeLeft.innerText = prog>=1
+      timeLeftText.innerText = prog >= 1
         ? 'Time Left: 00:00:00'
         : `Time Left: ${formatTime(secLeft)}`;
 
-      if(prog>=1){
-        running=false; drops=[]; ctx.clearRect(0,0,canvas.width,canvas.height);
-        drawFill(); startBtn.innerText='Start Charging';
+      if (prog >= 1) {
+        // When target is reached, it's like a stop, but with "Target Reached!"
+        running = false; 
+        paused = false; // Not paused, it's completed.
+        drops = [];
+        pauseBtnRef.innerText = 'Pause'; // Reset pause button
+        startBtn.innerText = 'Start Charging';
+        
+        capIn.disabled = false;
+        spdIn.disabled = false;
+        stIn.disabled = false;
+        tgIn.disabled = false;
+        
+        drawFill(); // Ensure final state is drawn
         return;
       }
 
-      // spawn with wide velocity range
-      const dt = (now-lastFrameTime)/1000;
+      const dt = (now - lastFrameTime) / 1000;
       lastFrameTime = now;
+      // Ensure dt is not excessively large if there was a long pause before this frame.
+      // This is mostly handled by resetting lastFrameTime on resume.
+      
       const count = dropsPerSecond * dt;
-      for(let i=0; i<count; i++){
+      for (let i = 0; i < count; i++) {
         drops.push({
-          x: Math.floor(Math.random()*1000),
+          x: Math.floor(Math.random() * 1000),
           y: 0,
-          v: 1 + Math.random()*9  // speeds 1px→10px per frame
+          v: 1 + Math.random() * 9 
         });
       }
 
-      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // move & settle
-      for(let i=drops.length-1; i>=0; i--){
+      for (let i = drops.length - 1; i >= 0; i--) {
         const d = drops[i];
         d.y += d.v;
         const ty = findNextFillY(d.x);
-        if(ty<500 && d.y>=499-ty){
-          chargedMap[ty][d.x]=true;
-          drops.splice(i,1);
-        } else if(ty>=500){
-          drops.splice(i,1);
+        if (ty < 500 && d.y >= 499 - ty) {
+          chargedMap[ty][d.x] = true;
+          drops.splice(i, 1);
+        } else if (ty >= 500) { // Drop went past the fillable area
+          drops.splice(i, 1);
         }
       }
 
       drawFill();
 
-      // draw drops
-      ctx.fillStyle='#00FF00';
-      for(const d of drops){
-        ctx.fillRect(d.x,d.y,1,1);
+      ctx.fillStyle = '#00FF00';
+      for (const d of drops) {
+        ctx.fillRect(d.x, d.y, 1, 1);
       }
 
       requestAnimationFrame(updateCharging);
     }
 
-    function drawFill(){
-      ctx.fillStyle='#C68F65';
-      for(let y=0; y<500; y++){
-        for(let x=0; x<1000; x++){
-          if(chargedMap[y][x]){
-            ctx.fillRect(x,499-y,1,1);
+    function drawFill() {
+      ctx.fillStyle = '#C68F65';
+      for (let y = 0; y < 500; y++) {
+        for (let x = 0; x < 1000; x++) {
+          if (chargedMap[y][x]) {
+            ctx.fillRect(x, 499 - y, 1, 1);
           }
         }
       }
     }
 
-    function findNextFillY(x){
-      for(let y=0; y<500; y++){
-        if(!chargedMap[y][x]) return y;
+    function findNextFillY(x) {
+      for (let y = 0; y < 500; y++) {
+        if (!chargedMap[y][x]) return y;
       }
       return 500;
     }
 
-    function formatTime(s){
-      const h=Math.floor(s/3600),
-            m=Math.floor((s%3600)/60),
-            sec=Math.floor(s%60);
-      return `${h.toString().padStart(2,'0')}:`+
-             `${m.toString().padStart(2,'0')}:`+
-             `${sec.toString().padStart(2,'0')}`;
+    function formatTime(s) {
+      const h = Math.floor(s / 3600),
+            m = Math.floor((s % 3600) / 60),
+            sec = Math.floor(s % 60);
+      return `${h.toString().padStart(2, '0')}:` +
+             `${m.toString().padStart(2, '0')}:` +
+             `${sec.toString().padStart(2, '0')}`;
     }
 
-    function togglePause(){
-      paused=!paused;
-      document.getElementById('pauseBtn').innerText = paused?'Resume':'Pause';
+    function togglePause() {
+      // Do not allow pause/resume if the simulation is not in a "running" state,
+      // or if it has completed.
+      // Also check prog variable which should be defined in the scope of togglePause if updateCharging has run.
+      // To be safe, check its existence or define it if not available.
+      // However, direct access to 'prog' here is not good practice as it's not passed.
+      // Rely on 'running' and statusText.
+      if (!running && statusText.innerText === 'Target Reached!') return; // Completed
+      if (!running && statusText.innerText === 'Stopped') return; // Stopped
+      if (!running && statusText.innerText === 'Waiting...' && !paused) { 
+          // Not started yet, and not in a paused state from a previous run.
+          return;
+      }
+      // if (typeof prog !== 'undefined' && prog >= 1 && !running) return; // Completed
+
+      paused = !paused;
+
+      if (paused) {
+        // We are pausing
+        if (running) { 
+          pauseStartTime = performance.now();
+        }
+        pauseBtnRef.innerText = 'Resume';
+      } else {
+        // We are resuming
+        if (running && pauseStartTime > 0) { 
+          const pauseDuration = performance.now() - pauseStartTime;
+          chargingStartTime += pauseDuration; 
+          lastFrameTime = performance.now();    
+        }
+        pauseStartTime = 0; 
+        pauseBtnRef.innerText = 'Pause';
+        // If resuming from a state where not running (e.g. user clicked stop then resume)
+        // ensure the animation loop continues if it was stopped by running=false.
+        // This needs careful consideration with start/stop logic.
+        // For now, togglePause primarily works if 'running' is true.
+        // If it was stopped (running=false), clicking resume here won't restart drops
+        // because updateCharging relies on 'running'. User should use 'Start Charging'.
+        // The `if (!running) return;` in `updateCharging` handles this.
+        // However, if we unpause, we should ensure `updateCharging` is called.
+        // If `running` is false, but we are unpausing a "paused" state,
+        // we need to ensure `requestAnimationFrame` is called.
+        // The `updateCharging` function already calls rAF if paused, so this should be fine.
+        // And if `running` is false, it will just keep returning.
+      }
     }
+
+    function testFormatTime() {
+      let testsPassed = 0;
+      let testsFailed = 0;
+      const testCases = [
+        { input: 0, expected: "00:00:00" },
+        { input: 59, expected: "00:00:59" },
+        { input: 60, expected: "00:01:00" },
+        { input: 3599, expected: "00:59:59" },
+        { input: 3600, expected: "01:00:00" },
+        { input: 3661, expected: "01:01:01" },
+        { input: 86399, expected: "23:59:59" }
+      ];
+
+      console.log("Running tests for formatTime()...");
+
+      testCases.forEach((tc, index) => {
+        const actual = formatTime(tc.input);
+        const condition = actual === tc.expected;
+        // Custom message to avoid default console.assert message which might be confusing
+        if (!condition) {
+            console.error(`Test Case ${index + 1} FAILED: formatTime(${tc.input}) returned "${actual}", expected "${tc.expected}"`);
+        }
+        // Still use console.assert for its native behavior if environment supports it well
+        console.assert(condition, `Assertion for Test Case ${index + 1}`); 
+        
+        if (condition) {
+          testsPassed++;
+        } else {
+          testsFailed++;
+        }
+      });
+
+      if (testsFailed === 0) {
+        console.log(`All ${testsPassed} formatTime() tests passed!`);
+      } else {
+        console.error(`${testsFailed} formatTime() tests FAILED, ${testsPassed} passed.`);
+      }
+      return testsFailed === 0;
+    }
+
+    // Call the test function when the script loads
+    // This should ideally be wrapped, e.g. window.onload or DOMContentLoaded,
+    // but for this specific case, placing it at the end of the script is fine
+    // as formatTime function is already defined above.
+    testFormatTime();
   </script>
 </body>
 </html>
